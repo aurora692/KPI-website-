@@ -1,144 +1,123 @@
 import streamlit as st
 import pandas as pd
 import requests
-from datetime import datetime
+import plotly.express as px
+from datetime import datetime, date
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="Orderly KPIs", page_icon="🦅", layout="wide")
-
-# --- CUSTOM CSS ---
 st.markdown("""
 <style>
-    .metric-card {
-        background-color: #1E1E1E;
-        padding: 20px;
-        border-radius: 10px;
-        border: 1px solid #333;
-        margin-bottom: 10px;
-    }
-    .metric-label { font-size: 14px; color: #888; }
-    .metric-value { font-size: 28px; font-weight: bold; color: #FFF; }
+    .metric-container { background-color: #1E1E1E; padding: 15px; border-radius: 8px; border: 1px solid #333; margin-bottom: 15px; }
+    [data-testid="stToolbar"] { visibility: hidden; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- 🔌 METABASE INTEGRATION (V2) ---
-METABASE_CONFIG = {
-    "enabled": False,  # Set to True when you have credentials
-    "url": "https://metabase.orderly.network",  # REPLACE THIS
-    "username": "your_email@orderly.network",   # REPLACE THIS
-    "password": "your_password",                # REPLACE THIS
-    "questions": {
-        "revenue": 123,       
-        "active_users": 124,  
-        "market_share": 125   
-    }
-}
+# --- 1. GOOGLE SHEETS (HISTORY) ---
+SHEET_ID = "1ydkI-hz6BP8mCY1pF8_Xuw-383HycWzxO3qzboSqYl0" 
+SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv"
 
-def get_metabase_token():
-    """Authenticates with Metabase and returns a Session ID"""
-    if not METABASE_CONFIG["enabled"]: return None
+@st.cache_data(ttl=60)
+def load_history():
     try:
-        res = requests.post(f"{METABASE_CONFIG['url']}/api/session", json={
-            "username": METABASE_CONFIG["username"],
-            "password": METABASE_CONFIG["password"]
-        }, timeout=5)
-        if res.status_code == 200:
-            return res.json()["id"]
-    except Exception as e:
-        st.sidebar.error(f"Metabase Auth Failed: {e}")
-    return None
+        if "YOUR_GOOGLE_SHEET_ID" in SHEET_ID:
+            return pd.DataFrame([
+                {"date": "2026-02-01", "revenue": 14000, "active_users": 1100, "new_users": 50, "omni_tvl": 11.2},
+                {"date": "2026-02-08", "revenue": 15000, "active_users": 1200, "new_users": 60, "omni_tvl": 10.9}
+            ])
+        df = pd.read_csv(SHEET_URL)
+        df['date'] = pd.to_datetime(df['date']).dt.date
+        return df
+    except: return pd.DataFrame()
 
-def get_metabase_result(session_id, question_id):
-    """Fetches the latest value from a specific Metabase Question"""
-    if not session_id: return None
+# --- 2. LIVE DATA (API) ---
+@st.cache_data(ttl=600)
+def get_live_data():
+    data = {"price": 0.055, "rank_lama": 39, "rank_cmc": 799}
     try:
-        headers = {"X-Metabase-Session": session_id}
-        res = requests.post(f"{METABASE_CONFIG['url']}/api/card/{question_id}/query/json", headers=headers, timeout=10)
-        if res.status_code == 200:
-            data = res.json()
-            if data and len(data) > 0:
-                return list(data[0].values())[0] 
-    except:
-        pass
-    return None
+        cg = requests.get("https://api.coingecko.com/api/v3/coins/orderly-network", timeout=3).json()
+        data["price"] = cg["market_data"]["current_price"]["usd"]
+        data["rank_cmc"] = cg["market_cap_rank"]
+        
+        lama = requests.get("https://api.llama.fi/overview/dexs?excludeTotalDataChart=true&dataType=dailyVolume", timeout=5).json()
+        derivs = [p for p in lama['protocols'] if p.get('category') == "Derivatives"]
+        derivs.sort(key=lambda x: x.get('total24h', 0) or 0, reverse=True)
+        for i, p in enumerate(derivs):
+            if "Orderly" in p['name']:
+                data["rank_lama"] = i + 1
+                break
+    except: pass
+    return data
 
-# --- PUBLIC DATA FUNCTIONS ---
 
-@st.cache_data(ttl=3600)
-def get_crypto_prices():
-    """Fetches $ORDER price and rank from CoinGecko"""
-    try:
-        url = "https://api.coingecko.com/api/v3/coins/orderly-network"
-        res = requests.get(url, timeout=5)
-        if res.status_code == 200:
-            d = res.json()
-            return {
-                "price": d["market_data"]["current_price"]["usd"],
-                "rank": d["market_cap_rank"],
-                "change": d["market_data"]["price_change_percentage_24h"]
-            }
-    except:
-        pass
-    return {"price": 0.15, "rank": 180, "change": 0}
-
-@st.cache_data(ttl=3600)
-def get_defillama_perps():
-    return 301_000_000_000  # Placeholder
+# --- 3. OMNIVAULT CHART DATA ---
+def get_omnivault_chart_data():
+    dates = pd.date_range(end=datetime.today(), periods=8, freq="W-MON")
+    data = []
+    base = [13.7, 12.3, 11.0, 10.6, 10.4, 9.9, 9.5, 9.2]
+    kronos = [1.9, 2.0, 1.8, 1.5, 0.9, 0.8, 0.8, 0.8]
+    smaug = [0.1, 0.1, 0.1, 0.2, 0.2, 0.2, 0.7, 0.9]
+    
+    for i, d in enumerate(dates):
+        d_str = d.strftime("%Y-%m-%d")
+        idx = i if i < len(base) else -1
+        data.append({"Date": d_str, "Type": "Orderly OmniVault", "TVL": base[idx]})
+        data.append({"Date": d_str, "Type": "Kronos QLS", "TVL": kronos[idx]})
+        data.append({"Date": d_str, "Type": "Smaug", "TVL": smaug[idx]})
+    return pd.DataFrame(data)
 
 # --- MAIN APP ---
-
 st.title("🦅 Orderly Network KPI Dashboard")
-st.caption("Data Mode: Hybrid (Public APIs + Metabase/Manual)")
 
-# 1. SIDEBAR
+# Load Data
+df_hist = load_history()
+live = get_live_data()
+df_omni = get_omnivault_chart_data()
+
+# Sidebar Input
 with st.sidebar:
-    st.header("⚙️ Data Source")
-    mb_session = get_metabase_token()
+    st.header("📝 Daily Update")
+    last_rec = df_hist.iloc[-1] if not df_hist.empty else {"revenue": 15000, "active_users": 1200, "new_users": 50}
     
-    if mb_session:
-        st.success(f"✅ Connected to Metabase")
-    else:
-        st.warning("⚠️ Metabase Not Configured")
-        st.markdown("---")
-        st.write("**Manual Override:**")
-        with st.form("manual_entry"):
-            in_revenue = st.number_input("Avg Daily Revenue ($)", 15000)
-            in_users = st.number_input("Daily Active Users", 1200)
-            in_share = st.number_input("Market Share (%)", 2.5)
-            in_dexs = st.number_input("Graduated DEXs", 146)
-            st.form_submit_button("Update")
+    with st.form("input"):
+        d_date = st.date_input("Date", date.today())
+        in_rev = st.number_input("Revenue", value=float(last_rec.get('revenue', 15000)))
+        in_active = st.number_input("Active Users", value=int(last_rec.get('active_users', 1200)))
+        in_new = st.number_input("New Users", value=int(last_rec.get('new_users', 50)))
+        submitted = st.form_submit_button("Update View")
 
-# 2. FETCH VALUES
-mb_revenue = get_metabase_result(mb_session, METABASE_CONFIG["questions"]["revenue"]) if mb_session else None
-mb_users = get_metabase_result(mb_session, METABASE_CONFIG["questions"]["active_users"]) if mb_session else None
+# Calculate Display Data
+current_revenue = in_rev
+latest_omni_tvl = df_omni[df_omni['Date'] == df_omni['Date'].max()]['TVL'].sum()
 
-val_revenue = mb_revenue if mb_revenue else (locals().get('in_revenue') or 15000)
-val_users = mb_users if mb_users else (locals().get('in_users') or 1200)
-val_share = locals().get('in_share') or 2.5
-val_dexs = locals().get('in_dexs') or 146
+# ROW 1: HEADLINES
+c1, c2, c3, c4, c5 = st.columns(5)
+with c1: st.metric("Omnivault TVL", f"${latest_omni_tvl:.2f}M")
+with c2: st.metric("$ORDER Price", f"${live['price']:.4f}")
+with c3: st.metric("CMC Rank", f"#{live['rank_cmc']}")
+with c4: st.metric("DeFiLlama Rank", f"#{live['rank_lama']}")
+with c5: st.metric("Daily Revenue", f"${current_revenue:,.0f}")
 
-public_data = get_crypto_prices()
-global_vol = get_defillama_perps()
+# ROW 2: OMNIVAULT STACKED CHART
+st.subheader("📊 OmniVault TVL - Weekly Stack")
+fig = px.bar(df_omni, x="Date", y="TVL", color="Type", 
+             color_discrete_map={"Orderly OmniVault": "#F4D03F", "Kronos QLS": "#9B59B6", "Smaug": "#58D68D"},
+             text_auto='.1f')
+fig.update_layout(plot_bgcolor="#1E1E1E", paper_bgcolor="#1E1E1E", font_color="white", height=350)
+st.plotly_chart(fig, use_container_width=True)
 
-# 3. DASHBOARD ROW 1
-st.subheader("🌍 Market & Token")
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("DeFi Perps Vol", f"${global_vol/1e9:.1f}B", "+24%")
-c2.metric("$ORDER Price", f"${public_data['price']:.3f}", f"{public_data['change']:.2f}%")
-c3.metric("CMC Rank", f"#{public_data['rank']}")
-c4.metric("Omnivault TVL", "$10.9M", "-2%")
+# ROW 3: USER METRICS
+st.subheader("👥 User Growth")
+u1, u2 = st.columns(2)
+with u1: 
+    st.metric("Active Users", f"{in_active:,}")
+with u2: 
+    st.metric("New Users", f"{in_new:,}")
 
-# 4. DASHBOARD ROW 2
-st.subheader("📈 Orderly Internal")
-c5, c6, c7, c8 = st.columns(4)
-c5.metric("Graduated DEXs", val_dexs, "+4")
-c6.metric("Daily Revenue", f"${val_revenue:,.0f}")
-c7.metric("Active Users", f"{val_users:,}")
-c8.metric("Market Share", f"{val_share}%")
-
-st.divider()
-if mb_session:
-    st.info("⚡ Internal metrics are automatically synced from Metabase.")
+# ROW 4: HISTORY TRENDS
+st.subheader("📈 Historical Trends")
+if not df_hist.empty and 'revenue' in df_hist:
+    st.line_chart(df_hist.set_index("date")[["revenue", "active_users", "new_users"]])
 else:
-    st.info("ℹ️ Currently using manual data. Edit `orderly_dashboard.py` to enable Metabase auto-sync.")
+    st.info("Connect Google Sheet to see historical trends.")
 
